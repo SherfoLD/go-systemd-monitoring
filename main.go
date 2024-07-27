@@ -5,8 +5,15 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
+	"time"
 
 	"github.com/coreos/go-systemd/v22/dbus"
+)
+
+var (
+	serviceStateMap = make(map[string]string)
+	mapMutex        sync.Mutex
 )
 
 func main() {
@@ -26,30 +33,51 @@ func main() {
 
 	conn.SetPropertiesSubscriber(updateCh, errCh)
 
+	// Start a goroutine to periodically post to Pushgateway
+	go func() {
+		for {
+			time.Sleep(15 * time.Second)
+			if err := postAllToPushGateway(); err != nil {
+				log.Println("Failed to post to Pushgateway:", err)
+			}
+		}
+	}()
+
 	for {
 		select {
 		case update := <-updateCh:
-			if err := postToPushGateway(update); err != nil {
-				log.Println("Failed to post to Pushgateway:", err)
-			}
+			processUpdate(update)
 		case err := <-errCh:
 			log.Println("Error from dbus:", err)
 		}
 	}
 }
 
-func postToPushGateway(update *dbus.PropertiesUpdate) error {
+func processUpdate(update *dbus.PropertiesUpdate) {
 	activeState, ok := update.Changed["ActiveState"]
 	if !ok {
-		return fmt.Errorf("active state not found in dbus update")
+		log.Printf("Active state not found in dbus update for unit: %s", update.UnitName)
+		return
 	}
 
-	data := fmt.Sprintf("# TYPE service_state gauge\nservice_state{service=\"%s\"} %d\n",
-		update.UnitName, stateToValue(activeState.String()))
+	mapMutex.Lock()
+	serviceStateMap[update.UnitName] = activeState.String()
+	mapMutex.Unlock()
+}
+
+func postAllToPushGateway() error {
+	mapMutex.Lock()
+	defer mapMutex.Unlock()
+
+	var buffer bytes.Buffer
+	buffer.WriteString("# TYPE service_state gauge\n")
+
+	for service, state := range serviceStateMap {
+		buffer.WriteString(fmt.Sprintf("service_state{service=\"%s\"} %d\n", service, stateToValue(state)))
+	}
 
 	url := "http://localhost:9091/metrics/job/top/instance/machine"
-
-	req, err := http.NewRequest("POST", url, bytes.NewBufferString(data))
+	req, err := http.NewRequest("POST", url, &buffer)
 	if err != nil {
 		return fmt.Errorf("error creating request: %w", err)
 	}
