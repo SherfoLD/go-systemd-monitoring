@@ -6,7 +6,6 @@ import (
 	"log"
 	"net/http"
 	"sync"
-	"time"
 
 	"github.com/coreos/go-systemd/v22/dbus"
 )
@@ -33,20 +32,13 @@ func main() {
 
 	conn.SetPropertiesSubscriber(updateCh, errCh)
 
-	// Start a goroutine to periodically post to Pushgateway
-	go func() {
-		for {
-			time.Sleep(15 * time.Second)
-			if err := postAllToPushGateway(); err != nil {
-				log.Println("Failed to post to Pushgateway:", err)
-			}
-		}
-	}()
-
 	for {
 		select {
 		case update := <-updateCh:
 			processUpdate(update)
+			if err := postAllToPushGateway(); err != nil {
+				log.Println("Failed to post to Pushgateway:", err)
+			}
 		case err := <-errCh:
 			log.Println("Error from dbus:", err)
 		}
@@ -63,6 +55,8 @@ func processUpdate(update *dbus.PropertiesUpdate) {
 	mapMutex.Lock()
 	serviceStateMap[update.UnitName] = activeState.String()
 	mapMutex.Unlock()
+
+	log.Printf("Received update for service: %s, state: %s", update.UnitName, activeState.String())
 }
 
 func postAllToPushGateway() error {
@@ -76,11 +70,13 @@ func postAllToPushGateway() error {
 		buffer.WriteString(fmt.Sprintf("service_state{service=\"%s\"} %d\n", service, stateToValue(state)))
 	}
 
-	url := "http://localhost:9091/metrics/job/top/instance/machine"
+	url := "http://localhost:9091/metrics/job/systemd/instance/localhost"
 	req, err := http.NewRequest("POST", url, &buffer)
 	if err != nil {
 		return fmt.Errorf("error creating request: %w", err)
 	}
+
+	log.Printf("Posting to Pushgateway: %s", buffer.String())
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
