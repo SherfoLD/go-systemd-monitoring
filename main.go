@@ -76,7 +76,7 @@ func postAllToPushGateway() error {
 		return fmt.Errorf("error creating request: %w", err)
 	}
 
-	log.Printf("Posting to Pushgateway: %s", buffer.String())
+	log.Printf("Posted data to Pushgateway")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -102,9 +102,9 @@ func stateToValue(state string) int {
 	case "\"reloading\"":
 		return 2
 	case "\"activating\"":
-		return 4
+		return 3
 	case "\"deactivating\"":
-		return 5
+		return 4
 	default:
 		panic("Unhandled dbus active state value")
 	}
